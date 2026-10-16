@@ -14,7 +14,7 @@ Trong một môi trường giao nhận giả lập, có **10 robot**, mỗi robo
 
 Thách thức là **không biết trước toàn bộ hàm chi phí và các quy tắc lựa chọn đường**. Các robot có thể chọn tuyến khác nhau trên cùng một bản đồ; luật còn có thể thay đổi theo thời tiết, hàng hóa và yêu cầu.
 
-Ở **bài toán dự đoán hướng đầu tiên**, đầu ra là `UP`, `DOWN`, `LEFT` hoặc `RIGHT`. Với **biến thể dự đoán toàn tuyến**, hệ thống phải tái dựng và dự đoán chuỗi hướng từ vị trí robot qua `via` (nếu có) tới `goal`.
+Khác với dạng bài chỉ yêu cầu dự đoán hướng đầu tiên (`UP`, `DOWN`, `LEFT` hoặc `RIGHT`), ở **vòng sau** hệ thống phải tái dựng và dự đoán **toàn bộ lộ trình** từ vị trí robot qua `via` (nếu có) tới `goal`.
 
 ### Bản đồ minh họa
 
@@ -28,7 +28,41 @@ Ví dụ, với yêu cầu:
 
 Hệ thống cần **(1)** đọc đúng vị trí robot, các cạnh và trạng thái đường trên ảnh; **(2)** xác định căn tin *phía bắc* là điểm ghé, KTX là đích và `fragile = true`; **(3)** tính tuyến hợp lệ theo chiến thuật robot. Không được đi đường đóng, đi ngược đường một chiều hoặc bỏ qua điểm ghé bắt buộc.
 
-## 2. Giải pháp của tôi: YOLO → Graph → NLP → RobotFit
+## 2. Khác biệt ở vòng sau
+
+### Đầu vào và đầu ra
+
+- Mỗi episode tương ứng với **một robot ẩn** và có **5 chuyến demo** cùng **6 chuyến query**. Chiến thuật của robot được giữ cố định trong cả 11 chuyến.
+- Mỗi demo có ảnh bản đồ, yêu cầu tiếng Việt và route robot đã đi. Ở test, route demo chỉ được thể hiện bằng nét đứt có mũi tên trên ảnh; hệ thống phải đọc route từ ảnh. Dữ liệu train/validation có thêm route dạng số để huấn luyện và kiểm tra bộ đọc.
+- Mỗi route là chuỗi hướng tuyệt đối trên ảnh: `0 = UP`, `1 = DOWN`, `2 = LEFT`, `3 = RIGHT`. Route bắt đầu ở tọa độ robot, đi qua `via` nếu có và kết thúc khi robot tới nơi giao.
+- Với 6 query, đầu ra là **toàn bộ route**, theo đúng thứ tự trong `queries.json`; không chỉ là bước đi đầu tiên. File nộp là danh sách route, ví dụ `[[0, 0, 3], [2, 1, 3, 3]]`.
+
+### Suy luận chiến thuật robot
+
+Thay vì dự đoán độc lập từng query, hệ thống dùng 5 demo để tìm chiến thuật cố định của episode, sau đó mô phỏng chiến thuật đó trên 6 query. Mỗi route dự đoán là tuyến có tổng chi phí nhỏ nhất từ nguồn → `via` (nếu có) → goal. Robot dừng tại goal đầu tiên tới được sau khi đã ghé `via`.
+
+Họ chiến thuật được mô tả bằng bảy tham số công khai:
+
+| Tham số | Các giá trị | Tác động chính |
+|---|---|---|
+| `legged` | `false`, `true` | Có được đi bậc thang hay không |
+| `crowded` | `10`, `20`, `35`, `60` | Chi phí cơ sở của đoạn đông người |
+| `covered` | `5`, `7`, `10`, `14` | Chi phí cơ sở của đoạn có mái che |
+| `rain` | `none`, `cover`, `stairs` | Khi mưa, tăng chi phí đường không mái hoặc cộng phí bậc thang |
+| `urgent` | `none`, `direct`, `bold` | Khi gấp, đi đường trực tiếp hoặc bỏ phạt đường đông theo luật tương ứng |
+| `fragile` | `none`, `calm`, `smooth`, `both` | Khi hàng dễ vỡ, tăng phạt đường đông và/hoặc chi phí rẽ |
+| `turns` | `none`, `straight`, `right`, `left` | Chi phí giữ hướng, rẽ phải, rẽ trái và quay đầu |
+
+Mỗi episode có một cấu hình trong họ này; đội phải giữ lại các cấu hình tái tạo được cả 5 route demo. Nếu các cấu hình còn lại cùng cho một route trên từng query, route đó được xác định. Các ưu tiên chi phí phải tuân thủ đúng thứ tự áp dụng của đặc tả: trường hợp `urgent=direct` và nhiệm vụ gấp được xử lý trước, còn các điều kiện khác lần lượt điều chỉnh chi phí cạnh và chi phí rẽ.
+
+### Quy tắc bản đồ và kiểm định
+
+- Quy ước ký hiệu, bốn kiểu trình bày sơ đồ, chú giải, cách viết yêu cầu và tham chiếu không gian vẫn theo định dạng mà bộ đọc bản đồ/NLU hiện có xử lý.
+- Không đi cạnh đóng, không đi ngược đường một chiều; chỉ robot có chân được đi cầu thang. Tham chiếu không gian phải được gắn vào đúng bản địa điểm trên ảnh.
+- Khi nhiều bước có cùng tổng chi phí còn lại tại giao lộ, thứ tự phá hòa là **đi thẳng → rẽ phải → rẽ trái → quay đầu**. Ở bước đầu tiên, hướng hiện tại lấy từ mũi robot.
+- Train dùng bản đồ mức standard; validation và test dùng bản đồ hard. Mạng đường là mới giữa các tập, vì vậy cần kiểm định cả việc đọc graph, đọc route demo, fit chiến thuật và dự đoán query.
+
+## 3. Giải pháp của tôi: YOLO → Graph → NLP → RobotFit
 
 ```text
                  ẢNH BẢN ĐỒ                         YÊU CẦU TIẾNG VIỆT
@@ -49,16 +83,16 @@ Hệ thống cần **(1)** đọc đúng vị trí robot, các cạnh và trạn
 
 **Điểm mạnh của thiết kế:** tách hệ thống thành các bước có thể **đánh giá, phân tích lỗi và tối ưu độc lập**. YOLO đọc ảnh, BERT hiểu nhiệm vụ; thuật toán tìm đường giải thích *vì sao* robot chọn một tuyến, thay vì để một mô hình black-box đoán trực tiếp.
 
-## 3. Computer Vision — Fine-tuning YOLO và khôi phục đồ thị
+## 4. Computer Vision — Fine-tuning YOLO và khôi phục đồ thị
 
-### 3.1. Nhận diện bản đồ bằng YOLOv8m
+### 4.1. Nhận diện bản đồ bằng YOLOv8m
 
 - Fine-tune **YOLOv8m** trên bộ ảnh sơ đồ với **38 lớp** ban đầu, gồm: 10 loại địa điểm, 4 hướng robot, các kiểu đường, đường đóng, cầu thang, đường một chiều, thời tiết và các thành phần chú giải.
 - Mở rộng thành **42 lớp** bằng bốn lớp `route_up`, `route_down`, `route_left`, `route_right` để đọc thêm tuyến đã đi trong ảnh demo.
 - Sinh bounding-box labels từ metadata bản đồ, đồng thời kiểm tra trực quan nhãn trước khi huấn luyện.
 - Hạn chế các phép biến đổi hình học làm sai ngữ nghĩa hướng mũi tên/đường một chiều; chú trọng xử lý ảnh mờ, JPEG và sơ đồ nghiêng nhẹ.
 
-### 3.2. Cơ chế YOLO-to-Graph
+### 4.2. Cơ chế YOLO-to-Graph
 
 **YOLO không trực tiếp sinh tuyến đường.** Kết quả detection được giải mã thành **đồ thị có hướng** có thể dùng với Dijkstra và bộ mô phỏng chiến thuật.
 
@@ -81,13 +115,13 @@ Cạnh A ── B
 
 `route_status` **không ghi đè** `status` của đường. Điều này giúp vừa hiểu môi trường, vừa học được hành vi robot từ chính tuyến đi mẫu. Các bước route phải khớp với cạnh tồn tại trong graph, không chỉ là các mũi tên nằm gần nhau trên ảnh.
 
-### 3.3. Đánh giá
+### 4.3. Đánh giá
 
 Ở lần đánh giá bộ đọc bản đồ đã cải tiến, hệ thống đạt **300/300 ảnh validation khôi phục graph chính xác hoàn toàn**; các thống kê precision/recall cạnh được ghi nhận khoảng **99,95%–99,97%**.
 
 > Đây là **kết quả của thành phần YOLO-to-Graph trên tập kiểm định được sử dụng**, không phải độ chính xác dự đoán toàn tuyến hay toàn bộ hệ thống. Phần đọc route 42 lớp và bước ráp route được kiểm thử riêng, không đánh đồng với kết quả graph 38 lớp.
 
-## 4. NLP — Hiểu câu lệnh tiếng Việt bằng BERT
+## 5. NLP — Hiểu câu lệnh tiếng Việt bằng BERT
 
 Fine-tune mô hình BERT theo kiến trúc **shared encoder + 8 task-specific heads** để dự đoán:
 
@@ -97,7 +131,7 @@ Fine-tune mô hình BERT theo kiến trúc **shared encoder + 8 task-specific he
 
 Pipeline xử lý các cách gọi địa điểm khác nhau, câu phủ định, yêu cầu không dấu và thứ tự câu linh hoạt. Kết quả NLP sau đó được **ground** vào các địa điểm thật có trên graph, bảo đảm chọn đúng bản sao địa điểm khi bản đồ có hai vị trí cùng loại.
 
-## 5. RobotFit — Suy luận chiến thuật thay vì đoán mò
+## 6. RobotFit — Suy luận chiến thuật thay vì đoán mò
 
 Mỗi robot có chiến thuật di chuyển riêng. Phần nghiên cứu tập trung vào việc **tái dựng hàm chi phí và quy tắc phá hòa** từ những đường đi được quan sát.
 
@@ -109,7 +143,7 @@ Mỗi robot có chiến thuật di chuyển riêng. Phần nghiên cứu tập t
 
 Trong notebook pipeline được cung cấp, bộ mô phỏng còn **liệt kê họ cấu hình chiến thuật và đối chiếu với các tuyến demo** trước khi dự đoán các query mới. Cách tiếp cận này có tính diễn giải tốt: có thể truy vết từ hướng robot chọn ngược về trọng số, điều kiện và ràng buộc trên đồ thị.
 
-## 6. Điểm mạnh kỹ thuật
+## 7. Điểm mạnh kỹ thuật
 
 | Thành phần | Điểm nổi bật |
 |---|---|
@@ -120,7 +154,7 @@ Trong notebook pipeline được cung cấp, bộ mô phỏng còn **liệt kê 
 | **Algorithmic AI** | Dijkstra, Greedy, tham số chi phí theo ngữ cảnh, search và luật phá hòa |
 | **Research Workflow** | Phân tích lỗi từng tầng, kiểm định riêng từng thành phần, mô phỏng và so sánh giả thuyết |
 
-## 7. Công nghệ
+## 8. Công nghệ
 
 **Python · PyTorch · Ultralytics YOLOv8m · Hugging Face Transformers · BERT · OpenCV · NumPy · Graph Algorithms · Dijkstra · Beam Search · Jupyter/Google Colab**
 
